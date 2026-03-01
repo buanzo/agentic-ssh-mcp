@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssh-session-mcp"
+version = "0.1.0"
+description = "Standalone MCP server for persistent SSH sessions"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Arturo Busleiman and contributors"}]
+keywords = ["mcp", "ssh", "agent", "session"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: System :: Systems Administration",
+]
+dependencies = []
+
+[project.scripts]
+ssh-session-mcp = "ssh_session_mcp.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "localhost",
+    "host": "localhost",
+    "port": 22,
+    "description": "Loopback host for local testing.",
+    "allow_agent": true
+  },
+  {
+    "id": "example-jump",
+    "host": "jump.example.invalid",
+    "user": "ops",
+    "port": 22,
+    "password_env": "ONEMCP_SSH_PASSWORD",
+    "description": "Example jump host; use SSH keys or password env.",
+    "allow_agent": true
+  }
+]
