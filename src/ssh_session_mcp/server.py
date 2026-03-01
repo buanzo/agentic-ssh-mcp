@@ -13,7 +13,7 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .models import SshTarget
-from .ssh_sessions import SshSessionManager
+from .ssh_sessions import SshSessionManager, _SESSION_DIRECTORY_ONLY_ENV
 
 SERVER_NAME = "ssh-session-mcp"
 SERVER_VERSION = "0.1.0"
@@ -184,29 +184,10 @@ def _configure_logging(level: str, log_file: Optional[Path]) -> None:
             LOGGER.error("Failed to set file handler for logs: %s", exc, extra={"method": "init"})
 
 
-def _load_sample_ssh_directory() -> List[SshTarget]:
-    sample = [
-        {
-            "id": "localhost",
-            "host": "localhost",
-            "description": "Loopback host; expects SSH server and keys/agent.",
-        },
-        {
-            "id": "example-remote",
-            "host": "example.internal",
-            "user": "ops",
-            "port": 22,
-            "password_env": SSH_PASSWORD_ENV,
-            "description": "Sample remote host; password or SSH agent required.",
-        },
-    ]
-    return [SshTarget.from_dict(item) for item in sample]
-
-
 def _load_ssh_directory(path: Path) -> List[SshTarget]:
     if not path.exists():
-        LOGGER.warning("SSH directory %s not found; using sample targets", path)
-        return _load_sample_ssh_directory()
+        LOGGER.info("SSH directory %s not found; continuing without predefined targets", path)
+        return []
 
     text = _read_text(path)
     try:
@@ -226,7 +207,9 @@ def _load_ssh_directory(path: Path) -> List[SshTarget]:
         except ValueError as exc:
             LOGGER.warning("Skipping SSH target entry: %s", exc)
 
-    return targets or _load_sample_ssh_directory()
+    if not targets:
+        raise ValueError(f"SSH directory contains no valid target entries: {path}")
+    return targets
 
 
 def _targets_by_id(targets: List[SshTarget]) -> Dict[str, SshTarget]:
@@ -250,6 +233,10 @@ class SshSessionMcpServer:
             username_env_default=SSH_USERNAME_ENV,
             logger=LOGGER,
         )
+        if self.ssh_session_manager.directory_only and not self.ssh_targets:
+            raise ValueError(
+                f"{_SESSION_DIRECTORY_ONLY_ENV}=1 requires a non-empty SSH target directory file"
+            )
         self.resources = self._build_resources()
         self.tools = self._build_tools()
 
@@ -284,7 +271,30 @@ class SshSessionMcpServer:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "target": {"type": "string", "description": "Target id from SSH directory."},
+                        "target": {
+                            "type": "string",
+                            "description": "Configured target id (or host alias if no matching configured target exists).",
+                        },
+                        "host": {
+                            "type": "string",
+                            "description": "Direct host/IP/alias (or user@host) when not using configured targets.",
+                        },
+                        "user": {
+                            "type": "string",
+                            "description": "Optional remote username override (direct mode or configured target).",
+                        },
+                        "port": {
+                            "type": "integer",
+                            "description": "Optional SSH port override (1-65535).",
+                        },
+                        "password_env": {
+                            "type": "string",
+                            "description": "Optional password env-var name override.",
+                        },
+                        "allow_agent": {
+                            "type": "boolean",
+                            "description": "Optional override to enable/disable SSH agent forwarding/use.",
+                        },
                         "exec_mode": {
                             "type": "string",
                             "description": "Session mode: isolated (default) or shell (shared state).",
@@ -302,7 +312,7 @@ class SshSessionMcpServer:
                             "description": "Optional non-secret caller metadata hints.",
                         },
                     },
-                    "required": ["target"],
+                    "anyOf": [{"required": ["target"]}, {"required": ["host"]}],
                 },
                 handler=self.ssh_session_manager.tool_ssh_session_open,
             ),
@@ -381,7 +391,15 @@ class SshSessionMcpServer:
 
     def _tool_ssh_target_list(self, _: Dict[str, Any]) -> Dict[str, Any]:
         if not self.ssh_targets:
-            return {"content": [{"type": "text", "text": "No SSH targets configured."}], "isError": False}
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "No SSH targets configured. Use ssh_session_open(host=...) for direct mode.",
+                    }
+                ],
+                "isError": False,
+            }
 
         lines = ["id | host | port | user_source | agent | description", "-- | -- | -- | -- | -- | --"]
         for target in self.ssh_targets:
@@ -543,10 +561,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     _configure_logging(str(args.log_level), args.log_file)
 
-    server = SshSessionMcpServer(
-        root=args.root.resolve(),
-        ssh_directory_path=args.ssh_directory.resolve(),
-    )
+    try:
+        server = SshSessionMcpServer(
+            root=args.root.resolve(),
+            ssh_directory_path=args.ssh_directory.resolve(),
+        )
+    except ValueError as exc:
+        LOGGER.error("startup failed: %s", exc, extra={"method": "init"})
+        return 2
 
     LOGGER.info(
         "booted targets=%s tools=%s dry_run=%s",

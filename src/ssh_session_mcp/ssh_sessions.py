@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import atexit
+import ipaddress
 import os
 from pathlib import Path
 import select
@@ -30,6 +31,7 @@ _SESSION_MAX_PER_TARGET_ENV = "ONEMCP_SSH_SESSION_MAX_PER_TARGET"
 _SESSION_RECONNECT_ATTEMPTS_ENV = "ONEMCP_SSH_SESSION_RECONNECT_ATTEMPTS"
 _SESSION_RECONNECT_BACKOFF_ENV = "ONEMCP_SSH_SESSION_RECONNECT_BACKOFF_S"
 _SESSION_REDACT_ENV_KEYS_ENV = "ONEMCP_SSH_SESSION_REDACT_ENV_KEYS"
+_SESSION_DIRECTORY_ONLY_ENV = "ONEMCP_SSH_DIRECTORY_ONLY"
 
 _SESSION_IDLE_TIMEOUT_DEFAULT = 900.0
 _SESSION_MAX_LIFETIME_DEFAULT = 3600.0
@@ -214,6 +216,14 @@ def _redacted_key_count(env_map: Dict[str, str], patterns: Tuple[str, ...]) -> i
     return count
 
 
+def _is_literal_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 @dataclass
 class _SshSession:
     session_id: str
@@ -300,6 +310,13 @@ class SshSessionManager:
             logger=logger,
         )
         self.redact_patterns = _env_patterns(_SESSION_REDACT_ENV_KEYS_ENV, _REDACT_PATTERNS_DEFAULT)
+        self.directory_only = _env_bool(_SESSION_DIRECTORY_ONLY_ENV, False, logger)
+        if self.directory_only:
+            self.logger.info(
+                "%s enabled: only configured targets allowed, host must be literal IP, ssh config disabled",
+                _SESSION_DIRECTORY_ONLY_ENV,
+                extra={"tool": "ssh_session"},
+            )
         self._lock = threading.RLock()
         self._sessions: Dict[str, _SshSession] = {}
         self._socket_root = Path(tempfile.mkdtemp(prefix="onemcp-ssh-"))
@@ -315,14 +332,32 @@ class SshSessionManager:
                 is_error=True,
             )
 
-        target_id = args.get("target") or args.get("id") or args.get("host")
+        target_ref_raw = args.get("target") or args.get("id")
+        host_raw = args.get("host")
+        user_override_raw = args.get("user")
+        port_override_raw = args.get("port")
+        password_env_override_raw = args.get("password_env")
+        allow_agent_override_raw = args.get("allow_agent")
         exec_mode = (args.get("exec_mode") or "isolated").strip().lower() if isinstance(args.get("exec_mode"), str) else "isolated"
         metadata = args.get("metadata") or {}
         idle_timeout_raw = args.get("idle_timeout_s")
         max_lifetime_raw = args.get("max_lifetime_s")
 
-        if not isinstance(target_id, str) or not target_id.strip():
-            raise ValueError("target must be a non-empty string")
+        target_ref = self._coerce_optional_string(target_ref_raw, "target")
+        host_ref = self._coerce_optional_string(host_raw, "host")
+        user_override = self._coerce_optional_string(user_override_raw, "user")
+        password_env_override = self._coerce_optional_string(password_env_override_raw, "password_env")
+        port_override: Optional[int] = None
+        if port_override_raw is not None:
+            port_override = _parse_positive_int(port_override_raw, field_name="port")
+            if port_override > 65535:
+                raise ValueError("port must be <= 65535")
+        allow_agent_override: Optional[bool] = None
+        if allow_agent_override_raw is not None:
+            allow_agent_override = _parse_bool(allow_agent_override_raw, False)
+
+        if not target_ref and not host_ref:
+            raise ValueError("Provide either target or host")
         if exec_mode not in {"isolated", "shell"}:
             raise ValueError("exec_mode must be 'isolated' or 'shell'")
         if not isinstance(metadata, dict):
@@ -344,9 +379,14 @@ class SshSessionManager:
                     f"max_lifetime_s cannot exceed server limit {self.max_lifetime_default:g} seconds"
                 )
 
-        target = self.targets_index.get(target_id.strip().lower())
-        if not target:
-            return _mcp_text(f"Unknown SSH target: {target_id}", is_error=True)
+        target = self._resolve_open_target(
+            target_ref=target_ref,
+            host_ref=host_ref,
+            user_override=user_override,
+            port_override=port_override,
+            password_env_override=password_env_override,
+            allow_agent_override=allow_agent_override,
+        )
 
         session_id = uuid.uuid4().hex
         created_at = time.time()
@@ -386,6 +426,79 @@ class SshSessionManager:
             f"max_lifetime_s: {session.max_lifetime_s:g}",
         ]
         return _mcp_text("\n".join(lines))
+
+    def _coerce_optional_string(self, raw: Any, field_name: str) -> Optional[str]:
+        if raw is None:
+            return None
+        if not isinstance(raw, str):
+            raise ValueError(f"{field_name} must be a string")
+        value = raw.strip()
+        return value or None
+
+    def _split_user_host(self, host_ref: str) -> Tuple[Optional[str], str]:
+        value = host_ref.strip()
+        if "@" not in value:
+            return None, value
+        user_part, host_part = value.rsplit("@", 1)
+        if not user_part or not host_part:
+            raise ValueError("host must be a valid hostname, IP, alias, or user@host form")
+        return user_part, host_part
+
+    def _resolve_open_target(
+        self,
+        *,
+        target_ref: Optional[str],
+        host_ref: Optional[str],
+        user_override: Optional[str],
+        port_override: Optional[int],
+        password_env_override: Optional[str],
+        allow_agent_override: Optional[bool],
+    ) -> SshTarget:
+        resolved = self.targets_index.get(target_ref.lower()) if target_ref else None
+        direct_host_ref = host_ref
+        if resolved:
+            if host_ref:
+                raise ValueError("When target matches a configured entry, do not also pass host")
+            base_target = resolved
+            label = resolved.target_id
+        else:
+            if self.directory_only:
+                raise ValueError(
+                    f"{_SESSION_DIRECTORY_ONLY_ENV}=1 requires a configured target id from ssh directory"
+                )
+            # For compatibility, an unknown target is treated as a direct SSH host/alias.
+            direct_host_ref = direct_host_ref or target_ref
+            if not direct_host_ref:
+                raise ValueError(f"Unknown SSH target: {target_ref}")
+            parsed_user, parsed_host = self._split_user_host(direct_host_ref)
+            base_target = SshTarget(
+                target_id=direct_host_ref,
+                host=parsed_host,
+                user=parsed_user,
+            )
+            label = direct_host_ref
+
+        port = port_override if port_override is not None else base_target.port
+        user = user_override if user_override is not None else base_target.user
+        password_env = (
+            password_env_override if password_env_override is not None else base_target.password_env
+        )
+        allow_agent = (
+            allow_agent_override if allow_agent_override is not None else base_target.allow_agent
+        )
+        if self.directory_only and not _is_literal_ip(base_target.host):
+            raise ValueError(
+                f"{_SESSION_DIRECTORY_ONLY_ENV}=1 requires target host to be a literal IP: {base_target.host}"
+            )
+        return SshTarget(
+            target_id=label,
+            host=base_target.host,
+            port=port,
+            user=user,
+            password_env=password_env,
+            description=base_target.description,
+            allow_agent=allow_agent,
+        )
 
     def tool_ssh_session_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
         if not self.enabled:
@@ -694,6 +807,8 @@ class SshSessionManager:
                 sshpass_exe,
                 "-e",
                 ssh_exe,
+                "-F",
+                os.devnull,
                 "-o",
                 "BatchMode=no",
                 "-o",
@@ -702,11 +817,16 @@ class SshSessionManager:
         else:
             cmd = [
                 ssh_exe,
+                "-F",
+                os.devnull,
                 "-o",
                 "BatchMode=yes",
                 "-o",
                 "PreferredAuthentications=publickey,keyboard-interactive",
             ]
+        if not self.directory_only:
+            # Unrestricted mode should honor system and user SSH config.
+            cmd = [item for item in cmd if item not in {"-F", os.devnull}]
         cmd.extend(["-o", f"ConnectTimeout={max(1, int(timeout))}", "-p", str(target.port)])
         return cmd, env, destination
 
@@ -1039,4 +1159,3 @@ class SshSessionManager:
                     raise _SshSessionTransportError("shell transport closed stdout")
                 continue
             buffer += chunk
-

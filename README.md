@@ -100,6 +100,8 @@ Run with a custom target directory:
 ssh-session-mcp --ssh-directory /abs/path/to/ssh_directory.json
 ```
 
+If the directory file is missing, the server still starts and you can open sessions directly with `host`.
+
 ## Use from Codex
 
 Example MCP registration:
@@ -109,6 +111,8 @@ codex mcp add ssh-session -- ssh-session-mcp --ssh-directory /abs/path/to/ssh_di
 ```
 
 ## SSH target directory format
+
+The directory is optional. Use it when you want named targets and centralized defaults.
 
 `ssh_directory.sample.json` shows the schema:
 
@@ -129,7 +133,7 @@ codex mcp add ssh-session -- ssh-session-mcp --ssh-directory /abs/path/to/ssh_di
 Fields:
 
 - `id` (required): tool-facing target id
-- `host` (required): hostname or IP
+- `host` (required): hostname, IP, or SSH alias (for example aliases using `ProxyJump` in `~/.ssh/config`)
 - `port` (optional): default `22`
 - `user` (optional): remote username; otherwise env fallback
 - `password_env` (optional): env var name for password auth
@@ -139,8 +143,10 @@ Fields:
 ## Tools
 
 - `ssh_target_list()`
-  - lists loaded targets and auth hints
-- `ssh_session_open(target, exec_mode?, idle_timeout_s?, max_lifetime_s?, metadata?)`
+  - lists configured targets from the optional directory
+- `ssh_session_open(target? or host?, user?, port?, password_env?, allow_agent?, exec_mode?, idle_timeout_s?, max_lifetime_s?, metadata?)`
+  - `target`: configured target id
+  - `host`: direct host/IP/alias (or `user@host`) when not using a configured target
 - `ssh_session_exec(session_id, command, timeout?, cwd?, env?, stream?)`
 - `ssh_session_list(target?, include_closed?)`
 - `ssh_session_close(session_id, reason?)`
@@ -165,6 +171,7 @@ Session controls:
 - `ONEMCP_SSH_SESSION_RECONNECT_ATTEMPTS` (default `1`)
 - `ONEMCP_SSH_SESSION_RECONNECT_BACKOFF_S` (default `3`)
 - `ONEMCP_SSH_SESSION_REDACT_ENV_KEYS` (default patterns include `TOKEN,SECRET,KEY,PASSWORD,PASS,AUTH,COOKIE`)
+- `ONEMCP_SSH_DIRECTORY_ONLY` (default `0`): when `1`, only configured directory targets are allowed, hosts must be literal IPs, SSH config files are ignored (`ssh -F /dev/null`), and startup requires at least one valid directory target
 
 Server runtime:
 
@@ -174,6 +181,8 @@ Server runtime:
 
 ## Behavior notes
 
+- You can run without a target directory and open sessions directly by `host`.
+- Unknown `target` values are treated as direct host aliases unless `ONEMCP_SSH_DIRECTORY_ONLY=1`.
 - `shell` mode preserves shell context between commands.
 - `isolated` mode preserves transport, not shell state.
 - For nested SSH in `shell` mode, command stdin is isolated to avoid marker parsing hangs.
@@ -184,7 +193,7 @@ Server runtime:
 1. Open session:
 
 ```json
-{"name":"ssh_session_open","arguments":{"target":"vortex1","exec_mode":"shell"}}
+{"name":"ssh_session_open","arguments":{"host":"ops@bastion-prod","exec_mode":"shell"}}
 ```
 
 2. Execute commands:
