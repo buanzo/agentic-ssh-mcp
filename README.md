@@ -35,6 +35,30 @@ Most naive SSH tooling opens one connection per command. That causes:
 - Session metadata is process-local and ephemeral.
 - Commands are unrestricted by design; you should run this server only in trusted workflows.
 
+## Security notice (early release)
+
+This project is being released early to improve agentic SSH workflows for experienced operators.
+It is useful today, but it is not security-hardened and likely needs substantial additional work before broad production use.
+
+Use this server only if you understand and accept the risk profile.
+
+- Intended audience: experts running controlled and trusted environments.
+- Not intended as a drop-in secure default for untrusted multi-tenant setups.
+- Expect rough edges around hardening, auditing controls, and operational safeguards.
+
+If you need stricter guarantees, add your own guardrails (network isolation, strict allowlists, policy enforcement, secret handling controls, and centralized audit review) before deployment.
+
+## Contribution and review workflow
+
+Agentic PRs are welcome.
+
+To keep quality and security standards consistent, proposed changes follow a two-step review flow:
+
+- First: an agentic review pass (automated/LLM-assisted checks, including security-oriented scrutiny).
+- Then: human maintainer review before merge.
+
+Passing agentic checks does not imply approval; human review is always required.
+
 ## Project layout
 
 ```text
