@@ -4,6 +4,32 @@ Standalone MCP server for persistent, unrestricted SSH sessions.
 
 This server exposes explicit lifecycle tools so an agent can open one SSH transport, execute multiple commands efficiently, inspect state, and close sessions deterministically.
 
+## Why This Project Exists
+
+The MCP ecosystem already has several strong SSH servers, and they are valuable projects.
+
+Many implementations focus on stateless command execution: connect, run, return, disconnect. That model works well for simple remote tasks.
+
+`agentic-ssh-mcp` focuses on a different operational need: stateful, multi-step workflows where session continuity matters.
+
+This server is designed so agents can:
+
+- open once, execute many times, and close explicitly
+- preserve shell context when desired (`shell` mode)
+- keep persistent transport with clean per-command execution when desired (`isolated` mode)
+- iterate quickly in real operational sequences without reconnect overhead on every step
+
+As of March 1, 2026, notable SSH MCP projects include:
+
+- [AiondaDotCom/mcp-ssh](https://github.com/AiondaDotCom/mcp-ssh)
+- [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server)
+- [sinjab/mcp_ssh](https://github.com/sinjab/mcp_ssh)
+- [tufantunc/ssh-mcp](https://github.com/tufantunc/ssh-mcp)
+- [idletoaster/ssh-mcp-server](https://github.com/idletoaster/ssh-mcp-server)
+- [bvisible/mcp-ssh-manager](https://github.com/bvisible/mcp-ssh-manager)
+
+This project is not a rejection of those implementations; it is an intentional specialization for persistent session lifecycle and agentic shell continuity.
+
 ## Security Notice (Early Release)
 
 This project is useful today for controlled environments, but it is not a hardened multi-tenant security product.
