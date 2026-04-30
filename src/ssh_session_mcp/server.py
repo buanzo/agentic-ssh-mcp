@@ -267,7 +267,10 @@ class SshSessionMcpServer:
             ),
             "ssh_session_open": ToolDefinition(
                 name="ssh_session_open",
-                description="Open a persistent unrestricted SSH session (process-local, in-memory).",
+                description=(
+                    "Open a persistent unrestricted SSH session (process-local, in-memory). "
+                    "Provide either 'target' (configured target id) or 'host' (direct IP/hostname), but not both."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -312,7 +315,8 @@ class SshSessionMcpServer:
                             "description": "Optional non-secret caller metadata hints.",
                         },
                     },
-                    "anyOf": [{"required": ["target"]}, {"required": ["host"]}],
+                    # anyOf removed — Copilot/OpenAI API rejects anyOf/oneOf/allOf/not at top level.
+                    # The runtime handler already validates that target or host is present.
                 },
                 handler=self.ssh_session_manager.tool_ssh_session_open,
             ),
